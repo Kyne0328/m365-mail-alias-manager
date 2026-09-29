@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: m365-mail-alias-manager-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./apps/api/Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: ENTRA_CLIENT_ID
+        sync: false
+      - key: API_AUDIENCE
+        sync: false
+      - key: API_SCOPE
+        value: access_as_user
+      - key: ALLOWED_ORIGINS
+        sync: false
+      - key: PUBLIC_APP_URL
+        sync: false
+      - key: EXCHANGE_CERTIFICATE_BASE64
+        sync: false
+      - key: EXCHANGE_CERTIFICATE_PASSWORD
+        sync: false
