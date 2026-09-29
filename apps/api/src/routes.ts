@@ -10,7 +10,7 @@ import {
 } from "./exchange.js";
 import { buildAdminConsentUrl, buildSetupScript } from "./onboarding.js";
 import { normalizeOrganization, verifyOrganization } from "./tenant.js";
-import { normalizeAddress, normalizeDomain, normalizePrefix } from "./validation.js";
+import { normalizeAddress, normalizeDomain } from "./validation.js";
 import { withKeyedLock } from "./mutex.js";
 
 function sendInputError(reply: FastifyReply, error: unknown) {
@@ -141,11 +141,9 @@ export async function registerRoutes(app: FastifyInstance) {
       const body = (request.body ?? {}) as {
         organization?: string;
         domain?: string;
-        prefix?: string;
       };
       const organization = await verifiedOrganization(request, body.organization);
       const domain = normalizeDomain(body.domain);
-      const prefix = normalizePrefix(body.prefix);
       const lockKey = `${auth.tenantId}:${auth.userId}`;
 
       return await withKeyedLock(lockKey, () =>
@@ -154,7 +152,6 @@ export async function registerRoutes(app: FastifyInstance) {
           organization,
           userId: auth.userId,
           domain,
-          prefix,
           limit: config.aliasLimit
         })
       );

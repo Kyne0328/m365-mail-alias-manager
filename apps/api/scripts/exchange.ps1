@@ -1,7 +1,9 @@
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $Marker = "__ALIAS_MANAGER_JSON__"
-$AliasNamespace = "m365am"
+$LegacyAliasNamespace = "m365am"
+$MetadataPrefix = "m365am:v2"
+. (Join-Path $PSScriptRoot "alias-names.ps1")
 
 function Write-Envelope {
     param(
@@ -170,37 +172,137 @@ function Get-UserMailbox {
     return $mailboxes[0]
 }
 
+function Get-ManagedMetadataState {
+    param([object]$Mailbox)
+
+    $escapedPrefix = [Regex]::Escape($MetadataPrefix)
+    $aliasPattern = "^${escapedPrefix}:alias:(?<sequence>\d+):(?<address>[^:\s]+@[^:\s]+)$"
+    $orderPattern = "^${escapedPrefix}:order:(?<sequence>\d+)$"
+    $namePattern = "^${escapedPrefix}:name:(?<sequence>\d+)$"
+
+    $values = @(
+        $Mailbox.ExtensionCustomAttribute5 |
+            ForEach-Object { $_.ToString() }
+    )
+
+    $aliasEntries = @()
+    $orderEntries = @()
+    $nameEntries = @()
+    $orderCursor = 0
+    $nameCursor = 0
+
+    foreach ($value in $values) {
+        $aliasMatch = [Regex]::Match(
+            $value,
+            $aliasPattern,
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+        if ($aliasMatch.Success) {
+            $aliasEntries += [pscustomobject]@{
+                marker = $value
+                sequence = [int]$aliasMatch.Groups["sequence"].Value
+                address = $aliasMatch.Groups["address"].Value.ToLowerInvariant()
+            }
+            continue
+        }
+
+        $orderMatch = [Regex]::Match(
+            $value,
+            $orderPattern,
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+        if ($orderMatch.Success) {
+            $orderEntries += $value
+            $orderCursor = [Math]::Max($orderCursor, [int]$orderMatch.Groups["sequence"].Value)
+            continue
+        }
+
+        $nameMatch = [Regex]::Match(
+            $value,
+            $namePattern,
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+        if ($nameMatch.Success) {
+            $nameEntries += $value
+            $nameCursor = [Math]::Max($nameCursor, [int]$nameMatch.Groups["sequence"].Value)
+        }
+    }
+
+    return [pscustomobject]@{
+        aliasEntries = @($aliasEntries)
+        orderEntries = @($orderEntries)
+        nameEntries = @($nameEntries)
+        orderCursor = $orderCursor
+        nameCursor = $nameCursor
+    }
+}
+
+function Get-SmtpAddresses {
+    param([object]$Mailbox)
+
+    return @(
+        $Mailbox.EmailAddresses |
+            ForEach-Object { $_.ToString() } |
+            Where-Object { $_ -match "^(?i)smtp:" } |
+            ForEach-Object { ($_ -replace "^(?i)smtp:", "").ToLowerInvariant() }
+    )
+}
+
 function Get-AliasSet {
     param(
         [object]$Mailbox,
         [int]$Limit
     )
 
-    $escapedNamespace = [Regex]::Escape($AliasNamespace)
-    $pattern = "^smtp:$escapedNamespace-(?<prefix>[a-z0-9](?:[a-z0-9._-]{0,22}[a-z0-9])?)-(?<sequence>\d{6})-(?<nonce>[a-f0-9]{12})@(?<domain>[^@]+)$"
+    $smtpAddresses = @(Get-SmtpAddresses -Mailbox $Mailbox)
+    $metadata = Get-ManagedMetadataState -Mailbox $Mailbox
+    $managed = @()
 
-    $managed = @(
-        $Mailbox.EmailAddresses |
-            ForEach-Object { $_.ToString() } |
-            ForEach-Object {
-                $match = [Regex]::Match($_, $pattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)
-                if ($match.Success) {
-                    [pscustomobject]@{
-                        address = ($_ -replace "^[^:]+:", "").ToLowerInvariant()
-                        sequence = [int]$match.Groups["sequence"].Value
-                        prefix = $match.Groups["prefix"].Value.ToLowerInvariant()
-                        domain = $match.Groups["domain"].Value.ToLowerInvariant()
-                    }
-                }
-            } |
-            Sort-Object sequence -Descending
-    )
-
-    $next = if ($managed.Count -gt 0) {
-        ([int]($managed | Measure-Object sequence -Maximum).Maximum) + 1
+    foreach ($entry in $metadata.aliasEntries) {
+        if ($smtpAddresses -contains $entry.address) {
+            $parts = $entry.address.Split("@", 2)
+            $managed += [pscustomobject]@{
+                address = $entry.address
+                sequence = [int]$entry.sequence
+                prefix = $parts[0]
+                domain = $parts[1]
+                legacy = $false
+            }
+        }
     }
-    else {
-        1
+
+    $escapedNamespace = [Regex]::Escape($LegacyAliasNamespace)
+    $legacyPattern = "^$escapedNamespace-(?<prefix>[a-z0-9](?:[a-z0-9._-]{0,22}[a-z0-9])?)-(?<sequence>\d{6})-(?<nonce>[a-f0-9]{12})@(?<domain>[^@]+)$"
+
+    foreach ($address in $smtpAddresses) {
+        if (@($managed | Where-Object { $_.address -eq $address }).Count -gt 0) {
+            continue
+        }
+
+        $match = [Regex]::Match(
+            $address,
+            $legacyPattern,
+            [Text.RegularExpressions.RegexOptions]::IgnoreCase
+        )
+        if ($match.Success) {
+            $managed += [pscustomobject]@{
+                address = $address
+                sequence = [int]$match.Groups["sequence"].Value
+                prefix = $match.Groups["prefix"].Value.ToLowerInvariant()
+                domain = $match.Groups["domain"].Value.ToLowerInvariant()
+                legacy = $true
+            }
+        }
+    }
+
+    $managed = @($managed | Sort-Object sequence -Descending)
+
+    $highestSequence = $metadata.orderCursor
+    if ($managed.Count -gt 0) {
+        $highestSequence = [Math]::Max(
+            $highestSequence,
+            [int]($managed | Measure-Object sequence -Maximum).Maximum
+        )
     }
 
     return [ordered]@{
@@ -209,7 +311,7 @@ function Get-AliasSet {
         aliases = @($managed)
         count = $managed.Count
         limit = $Limit
-        nextSequence = $next
+        nextSequence = $highestSequence + 1
     }
 }
 
@@ -329,38 +431,86 @@ function Invoke-ExchangeAction {
             Assert-AcceptedDomain -Domain $Request.domain
             $mailbox = Get-UserMailbox -UserId $Request.userId
             $current = Get-AliasSet -Mailbox $mailbox -Limit $Request.limit
-            $allAddresses = @($mailbox.EmailAddresses | ForEach-Object { ($_ -replace "^[^:]+:", "").ToLowerInvariant() })
+            $metadata = Get-ManagedMetadataState -Mailbox $mailbox
+            $smtpAddresses = @(Get-SmtpAddresses -Mailbox $mailbox)
 
-            $sequence = [int]$current.nextSequence
+            $orderSequence = [int]$current.nextSequence
+            if ($orderSequence -ge [int]::MaxValue) {
+                throw "The alias sequence has reached its supported limit."
+            }
+
+            $nameSequence = [int]$metadata.nameCursor + 1
             do {
-                if ($sequence -gt 999999) {
-                    throw "The alias sequence has reached its six-digit limit."
+                if ($nameSequence -ge [int]::MaxValue) {
+                    throw "The human-name sequence has reached its supported limit."
                 }
-                $nonce = [Guid]::NewGuid().ToString("N").Substring(0, 12)
-                $candidate = ("{0}-{1}-{2:D6}-{3}@{4}" -f $AliasNamespace, $Request.prefix, $sequence, $nonce, $Request.domain).ToLowerInvariant()
-                $sequence++
-            } while ($allAddresses -contains $candidate)
+
+                $localPart = Get-HumanAliasLocalPart -Sequence $nameSequence
+                $candidate = "$localPart@$($Request.domain)".ToLowerInvariant()
+                $usedNameSequence = $nameSequence
+                $nameSequence++
+            } while ($smtpAddresses -contains $candidate)
 
             $removeCount = [Math]::Max(0, $current.count - [int]$Request.limit + 1)
             $primaryAddress = $mailbox.PrimarySmtpAddress.ToString().ToLowerInvariant()
-            $toRemove = @(
+            $toRemoveEntries = @(
                 $current.aliases |
                     Where-Object { $_.address -ne $primaryAddress } |
                     Sort-Object sequence |
-                    Select-Object -First $removeCount |
-                    ForEach-Object { "smtp:$($_.address)" }
+                    Select-Object -First $removeCount
             )
 
-            if ($toRemove.Count -lt $removeCount) {
+            if ($toRemoveEntries.Count -lt $removeCount) {
                 throw "The FIFO rotation cannot remove enough aliases because an app-managed address is currently the mailbox primary SMTP address."
             }
 
-            $changes = @{ Add = "smtp:$candidate" }
-            if ($toRemove.Count -gt 0) {
-                $changes.Remove = $toRemove
+            $emailChanges = @{ Add = "smtp:$candidate" }
+            if ($toRemoveEntries.Count -gt 0) {
+                $emailChanges.Remove = @(
+                    $toRemoveEntries |
+                        ForEach-Object { "smtp:$($_.address)" }
+                )
             }
 
-            Set-Mailbox -Identity $mailbox.Identity -EmailAddresses $changes -ErrorAction Stop
+            $metadataRemovals = @()
+            $metadataRemovals += @($metadata.orderEntries)
+            $metadataRemovals += @($metadata.nameEntries)
+
+            # Clean stale app metadata left behind by an interrupted/manual mailbox edit.
+            $metadataRemovals += @(
+                $metadata.aliasEntries |
+                    Where-Object { $smtpAddresses -notcontains $_.address } |
+                    ForEach-Object { $_.marker }
+            )
+
+            if ($toRemoveEntries.Count -gt 0) {
+                $removedAddresses = @($toRemoveEntries | ForEach-Object { $_.address })
+                $metadataRemovals += @(
+                    $metadata.aliasEntries |
+                        Where-Object { $removedAddresses -contains $_.address } |
+                        ForEach-Object { $_.marker }
+                )
+            }
+
+            $newOrderMarker = "${MetadataPrefix}:order:$orderSequence"
+            $newNameMarker = "${MetadataPrefix}:name:$usedNameSequence"
+            $newAliasMarker = "${MetadataPrefix}:alias:${orderSequence}:$candidate"
+            $metadataChanges = @{
+                Add = @($newOrderMarker, $newNameMarker, $newAliasMarker)
+            }
+
+            $metadataRemovals = @($metadataRemovals | Select-Object -Unique)
+            if ($metadataRemovals.Count -gt 0) {
+                $metadataChanges.Remove = $metadataRemovals
+            }
+
+            $setParams = @{
+                Identity = $mailbox.Identity
+                EmailAddresses = $emailChanges
+                ExtensionCustomAttribute5 = $metadataChanges
+                ErrorAction = "Stop"
+            }
+            Set-Mailbox @setParams
 
             $updated = Get-UserMailbox -UserId $Request.userId
             return Get-AliasSet -Mailbox $updated -Limit $Request.limit
@@ -369,6 +519,7 @@ function Invoke-ExchangeAction {
         "delete" {
             $mailbox = Get-UserMailbox -UserId $Request.userId
             $current = Get-AliasSet -Mailbox $mailbox -Limit $Request.limit
+            $metadata = Get-ManagedMetadataState -Mailbox $mailbox
             $target = $Request.address.ToString().ToLowerInvariant()
             $match = @($current.aliases | Where-Object { $_.address -eq $target })
 
@@ -380,7 +531,23 @@ function Invoke-ExchangeAction {
                 throw "The primary SMTP address cannot be removed."
             }
 
-            Set-Mailbox -Identity $mailbox.Identity -EmailAddresses @{ Remove = "smtp:$target" } -ErrorAction Stop
+            $markerRemovals = @(
+                $metadata.aliasEntries |
+                    Where-Object { $_.address -eq $target } |
+                    ForEach-Object { $_.marker }
+            )
+
+            $setParams = @{
+                Identity = $mailbox.Identity
+                EmailAddresses = @{ Remove = "smtp:$target" }
+                ErrorAction = "Stop"
+            }
+
+            if ($markerRemovals.Count -gt 0) {
+                $setParams.ExtensionCustomAttribute5 = @{ Remove = $markerRemovals }
+            }
+
+            Set-Mailbox @setParams
 
             $updated = Get-UserMailbox -UserId $Request.userId
             return Get-AliasSet -Mailbox $updated -Limit $Request.limit

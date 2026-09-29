@@ -82,10 +82,13 @@ try {
     Get-ManagementRoleEntry "$RecipientRole\\*" -ErrorAction Stop |
       Where-Object Name -NotIn @("Get-Mailbox", "Set-Mailbox") |
       ForEach-Object { Remove-ManagementRoleEntry $_.Identity -Confirm:$false -ErrorAction Stop }
-
-    Set-ManagementRoleEntry "$RecipientRole\\Get-Mailbox" -Parameters Filter,ResultSize -ErrorAction Stop
-    Set-ManagementRoleEntry "$RecipientRole\\Set-Mailbox" -Parameters Identity,EmailAddresses -ErrorAction Stop
   }
+
+  # Keep existing installations current when the app adds a narrowly-scoped
+  # mailbox property. ExtensionCustomAttribute5 stores only m365am:v2:* values
+  # and is modified with Add/Remove so unrelated tenant values are preserved.
+  Set-ManagementRoleEntry "$RecipientRole\\Get-Mailbox" -Parameters Filter,ResultSize -ErrorAction Stop
+  Set-ManagementRoleEntry "$RecipientRole\\Set-Mailbox" -Parameters Identity,EmailAddresses,ExtensionCustomAttribute5 -ErrorAction Stop
 
   if (-not (Get-ManagementRole $DomainRole -ErrorAction SilentlyContinue)) {
     New-ManagementRole -Name $DomainRole -Parent "View-Only Configuration" -ErrorAction Stop | Out-Null

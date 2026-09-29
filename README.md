@@ -2,7 +2,7 @@
 
 A multi-tenant PWA for Microsoft 365 users who want a small rotating set of real SMTP aliases on their existing Exchange Online mailbox.
 
-The app is customer-agnostic. It does **not** hard-code a customer tenant, domain, mailbox, or `.onmicrosoft.com` name. The only reserved naming convention is the `m365am-` prefix used to distinguish aliases this app owns from unrelated mailbox aliases.
+The app is customer-agnostic. It does **not** hard-code a customer tenant, domain, mailbox, or `.onmicrosoft.com` name. New aliases use short human-looking local parts such as `jpeterson@domain`; ownership is tracked separately in Exchange mailbox metadata so normal-looking aliases can still be managed safely.
 
 ## What it does
 
@@ -10,11 +10,12 @@ The app is customer-agnostic. It does **not** hard-code a customer tenant, domai
 - Binds the target mailbox to the signed-in user's immutable Microsoft Entra object ID; clients cannot submit an arbitrary mailbox.
 - Discovers the signed-in tenant's primary `.onmicrosoft.com` organization automatically; users do not type or store it in the browser.
 - Reads accepted Exchange domains and the current mailbox alias set together after tenant admin onboarding.
-- Generates aliases in the reserved form `m365am-<prefix>-000001-<random>@domain`: the number auto-increments while the random suffix prevents practical address reuse after manual deletion.
-- Keeps at most 30 app-managed aliases per mailbox, across all selected prefixes and domains.
+- Generates short person-style aliases such as `jpeterson@domain`, `mcarter@domain`, and `abrooks@domain`. Each generation advances a durable sequence so a deleted name is not reused.
+- Keeps at most 30 app-managed aliases per mailbox across all selected domains.
 - On alias 31, removes the oldest managed alias and adds the new one (FIFO).
+- Stores app ownership and sequence markers in Exchange `ExtensionCustomAttribute5` using `m365am:v2:*` values; unrelated values in that multivalued attribute are preserved.
 - Keeps state in Exchange itself. No customer database is required.
-- Never removes the mailbox primary SMTP address or aliases outside the reserved app-managed namespace.
+- Never removes the mailbox primary SMTP address or an unmarked normal-looking alias. Legacy `m365am-*` aliases created by older releases remain recognized and removable.
 
 ## Architecture
 
@@ -95,7 +96,7 @@ If Exchange access is not ready, the PWA shows:
 The setup script creates custom Exchange roles instead of granting the application the full Exchange Administrator role:
 
 - `Get-Mailbox -Filter -ResultSize`
-- `Set-Mailbox -Identity -EmailAddresses`
+- `Set-Mailbox -Identity -EmailAddresses -ExtensionCustomAttribute5`
 - `Get-AcceptedDomain`
 
 The customer administrator can inspect the script before running it. The setup account needs Exchange Organization Management rights and must be able to consent to the script's Microsoft Graph `Application.Read.All` delegated lookup so it can resolve the tenant-local enterprise application object ID.
@@ -213,7 +214,7 @@ For every request it:
 4. Uses the immutable `oid` claim to find exactly one Exchange mailbox by `ExternalDirectoryObjectId`.
 5. Verifies the supplied primary `.onmicrosoft.com` organization maps to the same tenant ID.
 6. Re-checks the requested alias domain against Exchange accepted domains.
-7. Only removes aliases in the reserved `m365am-<prefix>-######-<12-hex>@domain` namespace.
+7. Only removes aliases recorded in the app's `m365am:v2:*` Exchange metadata, plus legacy `m365am-*` aliases created by older releases.
 
 Mutations are serialized per tenant/user inside each API process so concurrent requests using different prefixes or domains cannot race the mailbox-wide FIFO counter.
 
@@ -222,7 +223,7 @@ Mutations are serialized per tenant/user inside each API process so concurrent r
 - This app depends on the Exchange Online PowerShell management surface because Microsoft Graph does not expose supported mailbox proxy-address mutation. Microsoft's newer Exchange Admin REST API is currently preview and its Mailbox endpoint does not support changing `EmailAddresses`.
 - A Render free instance may sleep. The app now warms the backend and PowerShell worker as early as possible, but a true Render free-tier cold start can still add noticeable latency. The app remains stateless with Exchange as the source of truth, so sleeping does not risk customer data.
 - The in-process mutation lock protects one API instance. If the service is later scaled to multiple instances, replace it with a distributed lock before enabling concurrent replicas.
-- The 30-alias cap is mailbox-wide for aliases in the reserved `m365am-` namespace. Unrelated SMTP aliases are never counted or deleted.
+- The 30-alias cap is mailbox-wide for aliases recorded in the app metadata plus legacy `m365am-*` addresses. Unrelated SMTP aliases are never counted or deleted.
 - Customer organizations remain responsible for their Microsoft 365 licensing, policies, and acceptable-use requirements.
 
 ## Checks

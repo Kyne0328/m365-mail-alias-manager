@@ -52,7 +52,6 @@ type ExchangeAction =
       organization: string;
       userId: string;
       domain: string;
-      prefix: string;
       limit: number;
     }
   | {
