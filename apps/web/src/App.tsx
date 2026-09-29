@@ -13,8 +13,6 @@ import { getActiveAccount, signIn, signOut } from "./auth";
 
 const DOMAIN_KEY = "alias-manager.domain";
 
-
-
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
 
 function Icon({ name }: { name: "copy" | "trash" | "plus" | "mail" | "shield" | "refresh" | "logout" }) {
@@ -28,7 +26,20 @@ function Icon({ name }: { name: "copy" | "trash" | "plus" | "mail" | "shield" | 
     logout: <><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></>
   };
 
-  return <svg className="icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
+  return (
+    <svg
+      className="icon"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {paths[name]}
+    </svg>
+  );
 }
 
 function App() {
@@ -37,13 +48,13 @@ function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [organization, setOrganization] = useState("");
   const [domain, setDomain] = useState("");
-
   const [domains, setDomains] = useState<DomainInfo[]>([]);
   const [aliasSet, setAliasSet] = useState<AliasSet | null>(null);
   const [onboarding, setOnboarding] = useState<OnboardingInfo | null>(null);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
   const [organizationReady, setOrganizationReady] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState("");
 
   const clientConfigured = Boolean(
     import.meta.env.VITE_ENTRA_CLIENT_ID &&
@@ -52,7 +63,7 @@ function App() {
   );
 
   const handleError = useCallback((error: unknown) => {
-    const message = error instanceof Error ? error.message : "Something went wrong.";
+    const message = error instanceof Error ? error.message : "The request failed.";
     setNotice({ tone: "error", text: message });
 
     if (error instanceof ApiError && error.code === "EXCHANGE_NOT_READY") {
@@ -66,6 +77,7 @@ function App() {
     setAliasSet(snapshot.aliasSet);
     setOnboarding(null);
     setOrganizationReady(true);
+    setPendingDelete("");
 
     setDomain((current) => {
       const remembered = localStorage.getItem(DOMAIN_KEY) ?? "";
@@ -117,6 +129,7 @@ function App() {
       setAliasSet(null);
       setOnboarding(null);
       setOrganizationReady(false);
+      setPendingDelete("");
       setBusy("");
       return;
     }
@@ -125,17 +138,17 @@ function App() {
     void loadWorkspace("bootstrap");
   }, [authenticated, handleError, loadWorkspace]);
 
-  async function generateAlias() {
+  async function createAlias() {
     if (!organization || !domain) return;
 
-    setBusy("generate");
+    setBusy("create");
     setNotice(null);
     try {
       const data = await api.createAlias(organization, domain);
       setAliasSet(data);
       setNotice({
         tone: "success",
-        text: `${data.aliases[0]?.address ?? "The new alias"} is ready to receive mail.`
+        text: `${data.aliases[0]?.address ?? "The new alias"} is ready. Mail goes to your inbox.`
       });
     } catch (error) {
       handleError(error);
@@ -152,7 +165,8 @@ function App() {
     try {
       const data = await api.deleteAlias(organization, address);
       setAliasSet(data);
-      setNotice({ tone: "info", text: `${address} was removed.` });
+      setPendingDelete("");
+      setNotice({ tone: "info", text: `${address} is deleted.` });
     } catch (error) {
       handleError(error);
     } finally {
@@ -160,61 +174,73 @@ function App() {
     }
   }
 
-  async function copy(text: string, label = "Copied to clipboard.") {
-    await navigator.clipboard.writeText(text);
-    setNotice({ tone: "success", text: label });
+  async function copy(text: string, label = "Copied.") {
+    try {
+      await navigator.clipboard.writeText(text);
+      setNotice({ tone: "success", text: label });
+    } catch {
+      setNotice({ tone: "error", text: "The browser could not copy the text." });
+    }
   }
 
   if (!clientConfigured) {
     return (
-      <main className="fatal-error">
+      <main className="fatal-error" id="main-content">
         <h1>Configuration required</h1>
-        <p>Set the VITE_ENTRA_CLIENT_ID, VITE_API_SCOPE, and VITE_API_BASE_URL build variables.</p>
+        <p>Set the client ID, API scope, and API URL build variables.</p>
       </main>
     );
   }
 
   if (!authenticated) {
     return (
-      <main className="signin-shell">
-        <section className="signin-panel" aria-labelledby="welcome-title">
-          <div className="brand brand-large">
-            <span className="brand-mark"><Icon name="mail" /></span>
-            <span>Mail Alias Manager</span>
-          </div>
-          <p className="eyebrow">Microsoft 365 alias rotation</p>
-          <h1 id="welcome-title">Fresh inbox aliases, without fresh mailboxes.</h1>
-          <p className="hero-copy">
-            Sign in with a work or school account. Your organization is detected automatically, and your aliases are reloaded from Exchange on every device.
-          </p>
-          <button className="primary-button sign-in-button" type="button" onClick={() => void signIn()}>
-            Continue with Microsoft
-            <span aria-hidden="true">→</span>
-          </button>
-          <div className="trust-row">
-            <span><Icon name="shield" /> Tenant-admin controlled</span>
-            <span>30-alias FIFO set</span>
-          </div>
-        </section>
-        <aside className="signin-aside" aria-label="How it works">
-          <div className="route-demo">
-            <span className="route-label">YOUR MAILBOX</span>
-            <strong>you@company.com</strong>
-            <div className="route-line" />
-            <div className="route-addresses">
-              <span>jpeterson@company.com</span>
-              <span>mcarter@company.com</span>
-              <span>abrooks@company.com</span>
+      <>
+        <a className="skip-link" href="#main-content">Skip to main content</a>
+        <main className="signin-shell" id="main-content">
+          <section className="signin-panel" aria-labelledby="welcome-title">
+            <div className="brand brand-large">
+              <span className="brand-mark"><Icon name="mail" /></span>
+              <span>Mail Alias Manager</span>
             </div>
-            <div className="route-note">31st created → oldest removed</div>
-          </div>
-        </aside>
-      </main>
+            <p className="eyebrow">Microsoft 365 aliases</p>
+            <h1 id="welcome-title">Use email aliases with your current inbox.</h1>
+            <p className="hero-copy">
+              Create short aliases for sign-ups and forms. Mail arrives in your current Microsoft 365 inbox.
+            </p>
+            <button className="primary-button sign-in-button" type="button" onClick={() => void signIn()}>
+              Sign in with Microsoft
+            </button>
+            <div className="trust-row" aria-label="Key features">
+              <span><Icon name="shield" /> Uses your existing mailbox</span>
+              <span>Keeps up to 30 aliases</span>
+            </div>
+          </section>
+
+          <aside className="signin-aside" aria-label="How aliases work">
+            <div className="route-demo">
+              <span className="route-label">ALIASES</span>
+              <div className="route-addresses">
+                <span>jpeterson@company.com</span>
+                <span>mcarter@company.com</span>
+                <span>abrooks@company.com</span>
+              </div>
+              <div className="route-arrow" aria-hidden="true">↓</div>
+              <span className="route-label">YOUR INBOX</span>
+              <strong>you@company.com</strong>
+              <p className="route-note">Create an alias. Use it. Mail arrives in your inbox.</p>
+            </div>
+          </aside>
+        </main>
+      </>
     );
   }
 
+  const inboxAddress = aliasSet?.primaryAddress || session?.username || account?.username || "Your Microsoft 365 inbox";
+
   return (
     <div className="app-shell">
+      <a className="skip-link" href="#main-content">Skip to main content</a>
+
       <header className="topbar">
         <div className="brand">
           <span className="brand-mark"><Icon name="mail" /></span>
@@ -225,23 +251,29 @@ function App() {
             <strong>{session?.name ?? account?.name ?? "Microsoft 365 user"}</strong>
             <span>{session?.username ?? account?.username}</span>
           </div>
-          <button className="icon-button" type="button" onClick={() => void signOut()} aria-label="Sign out">
+          <button
+            className="icon-button"
+            type="button"
+            onClick={() => void signOut()}
+            aria-label="Sign out"
+            title="Sign out"
+          >
             <Icon name="logout" />
           </button>
         </div>
       </header>
 
-      <main className="workspace">
-        <section className="page-heading">
+      <main className="workspace" id="main-content">
+        <section className="page-heading" aria-labelledby="page-title">
           <div>
-            <p className="eyebrow">Alias workspace</p>
-            <h1>Disposable addresses. One real inbox.</h1>
-            <p>Generated aliases receive mail in your existing Microsoft 365 mailbox. No extra mailbox license is created.</p>
+            <p className="eyebrow">Mail alias manager</p>
+            <h1 id="page-title">Email aliases</h1>
+            <p>Create an alias and use it where you need email. Mail goes to your current inbox.</p>
           </div>
           {organizationReady && aliasSet ? (
-            <div className="capacity" aria-label={`${aliasSet.count} of ${aliasSet.limit} managed aliases active`}>
-              <span>{aliasSet.count}</span>
-              <small>/ {aliasSet.limit} active</small>
+            <div className="capacity" aria-label={`${aliasSet.count} of ${aliasSet.limit} aliases active`}>
+              <strong>{aliasSet.count}</strong>
+              <span>of {aliasSet.limit} active</span>
             </div>
           ) : null}
         </section>
@@ -252,55 +284,52 @@ function App() {
           </div>
         ) : null}
 
-        <section className="configuration-panel" aria-labelledby="organization-heading">
-          <div className="section-number">01</div>
-          <div className="configuration-copy">
-            <h2 id="organization-heading">Your organization</h2>
-            <p>The tenant is discovered from your Microsoft sign-in. There is nothing to type or remember on another device.</p>
-          </div>
-          <div className={`organization-status${busy === "bootstrap" ? " is-loading" : ""}`} aria-live="polite">
-            {busy === "bootstrap" && !organizationReady ? (
-              <>
-                <span className="loading-dot" aria-hidden="true" />
-                <div>
-                  <strong>Connecting to Microsoft 365…</strong>
-                  <span>Loading your tenant, domains, mailbox, and aliases in one pass.</span>
-                </div>
-              </>
-            ) : organizationReady ? (
-              <>
-                <span className="status-check" aria-hidden="true">✓</span>
-                <div>
-                  <strong>{organization}</strong>
-                  <span>{domains.length} accepted {domains.length === 1 ? "domain" : "domains"} available</span>
-                </div>
-              </>
-            ) : (
-              <>
-                <span className="status-warning" aria-hidden="true">!</span>
-                <div>
-                  <strong>Organization setup required</strong>
-                  <span>An administrator needs to finish the one-time authorization below.</span>
-                </div>
-              </>
-            )}
-          </div>
-        </section>
+        {busy === "bootstrap" && !organizationReady ? (
+          <section className="connection-panel loading-panel" aria-live="polite">
+            <span className="loading-dot" aria-hidden="true" />
+            <div>
+              <h2>Connecting to Microsoft 365</h2>
+              <p>Loading your inbox, domains, and aliases.</p>
+            </div>
+          </section>
+        ) : null}
+
+        {organizationReady ? (
+          <section className="connection-panel" aria-labelledby="inbox-heading">
+            <div className="section-heading">
+              <p className="eyebrow">Connected</p>
+              <h2 id="inbox-heading">Your inbox</h2>
+              <p>Mail to your aliases arrives here.</p>
+            </div>
+            <dl className="connection-details">
+              <div>
+                <dt>Inbox</dt>
+                <dd>{inboxAddress}</dd>
+              </div>
+              <div>
+                <dt>Organization</dt>
+                <dd>{organization}</dd>
+              </div>
+            </dl>
+          </section>
+        ) : null}
 
         {!organizationReady && onboarding ? (
           <section className="onboarding-panel" aria-labelledby="admin-heading">
-            <div>
-              <p className="eyebrow">Tenant administrator</p>
-              <h2 id="admin-heading">One-time authorization is required</h2>
-              <p>
-                An administrator must grant the application its domain-read and Exchange permissions, then run the Exchange setup script once for this tenant.
-              </p>
+            <div className="section-heading">
+              <p className="eyebrow">Admin setup</p>
+              <h2 id="admin-heading">Authorize this app once</h2>
+              <p>A Microsoft 365 admin must authorize the app. Then the admin must run the Exchange setup script.</p>
             </div>
             <div className="onboarding-actions">
               <a className="primary-button" href={onboarding.adminConsentUrl} target="_blank" rel="noreferrer">
                 Grant admin consent
               </a>
-              <button className="secondary-button" type="button" onClick={() => void copy(onboarding.setupScript, "Setup script copied.")}>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => void copy(onboarding.setupScript, "Setup script copied.")}
+              >
                 <Icon name="copy" /> Copy setup script
               </button>
             </div>
@@ -313,19 +342,27 @@ function App() {
 
         {organizationReady ? (
           <>
-            <section className="control-strip" aria-labelledby="alias-settings-heading">
-              <div className="section-number">02</div>
-              <div className="control-copy">
-                <h2 id="alias-settings-heading">Alias domain</h2>
-                <p>Choose where generated addresses should live. Custom domains are preferred automatically when available.</p>
+            <section className="create-panel" aria-labelledby="create-heading">
+              <div className="section-heading">
+                <p className="eyebrow">New alias</p>
+                <h2 id="create-heading">Create an alias</h2>
+                <p>Choose a domain. The app creates a short name.</p>
               </div>
-              <div className="control-fields">
+
+              <form
+                className="create-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void createAlias();
+                }}
+              >
                 <div className="field">
                   <label htmlFor="domain">Domain</label>
                   <select
                     id="domain"
                     name="domain"
                     value={domain}
+                    aria-describedby="domain-help"
                     onChange={(event) => {
                       setDomain(event.target.value);
                       localStorage.setItem(DOMAIN_KEY, event.target.value);
@@ -337,67 +374,106 @@ function App() {
                       </option>
                     ))}
                   </select>
+                  <span className="field-help" id="domain-help">
+                    Example: jpeterson@{domain || "your-domain.com"}
+                  </span>
                 </div>
-                <div className="field alias-preview">
-                  <span className="field-label">Generated style</span>
-                  <span className="field-help">Examples: jpeterson@{domain || "…"}, mcarter@{domain || "…"}</span>
-                </div>
-              </div>
+
+                <button
+                  className="primary-button create-button"
+                  type="submit"
+                  disabled={busy === "create" || !domain}
+                  aria-busy={busy === "create"}
+                >
+                  <Icon name="plus" />
+                  {busy === "create" ? "Creating…" : "Create alias"}
+                </button>
+              </form>
             </section>
 
-            <section className="aliases-section" aria-labelledby="aliases-heading" aria-busy={busy === "bootstrap" || busy === "refresh"}>
+            <section className="aliases-section" aria-labelledby="aliases-heading" aria-busy={busy === "refresh"}>
               <div className="aliases-toolbar">
                 <div>
-                  <p className="eyebrow">03 · Active aliases</p>
-                  <h2 id="aliases-heading">Routing ledger</h2>
+                  <p className="eyebrow">Aliases</p>
+                  <h2 id="aliases-heading">Your aliases</h2>
+                  <p>Newest aliases appear first.</p>
                 </div>
-                <div className="toolbar-actions">
-                  <button
-                    className="icon-button"
-                    type="button"
-                    onClick={() => void loadWorkspace("refresh")}
-                    aria-label="Refresh aliases"
-                    disabled={busy === "refresh"}
-                  >
-                    <Icon name="refresh" />
-                  </button>
-                  <button className="primary-button generate-button" type="button" onClick={() => void generateAlias()} disabled={busy === "generate" || !domain}>
-                    <Icon name="plus" />
-                    {busy === "generate" ? "Creating…" : "Generate email"}
-                  </button>
-                </div>
+                <button
+                  className="secondary-button compact-button"
+                  type="button"
+                  onClick={() => void loadWorkspace("refresh")}
+                  disabled={busy === "refresh"}
+                  aria-busy={busy === "refresh"}
+                >
+                  <Icon name="refresh" />
+                  {busy === "refresh" ? "Refreshing…" : "Refresh"}
+                </button>
               </div>
 
               {!aliasSet ? (
                 <div className="loading-state" role="status">
                   <span className="loading-dot" aria-hidden="true" />
                   <div>
-                    <h3>Loading aliases…</h3>
-                    <p>Reading the current mailbox state from Exchange.</p>
+                    <h3>Loading aliases</h3>
+                    <p>Reading the current mailbox state.</p>
                   </div>
                 </div>
               ) : aliasSet.aliases.length ? (
                 <ol className="alias-list">
                   {aliasSet.aliases.map((alias, index) => (
-                    <li key={alias.address} className="alias-row">
-                      <div className="sequence-marker" aria-hidden="true">
-                        <span>{String(index + 1).padStart(2, "0")}</span>
-                      </div>
+                    <li key={alias.address} className={`alias-row${index === 0 ? " is-newest" : ""}`}>
+                      <span className="alias-icon" aria-hidden="true"><Icon name="mail" /></span>
                       <div className="alias-address">
-                        <strong>{alias.address.split("@")[0]}</strong>
-                        <span>@{alias.address.split("@")[1]}</span>
-                      </div>
-                      <div className="alias-meta">
-                        <span>#{String(alias.sequence).padStart(6, "0")}</span>
+                        <strong>{alias.address}</strong>
                         {index === 0 ? <span className="newest-badge">Newest</span> : null}
                       </div>
+
                       <div className="row-actions">
-                        <button className="icon-button" type="button" onClick={() => void copy(alias.address)} aria-label={`Copy ${alias.address}`}>
-                          <Icon name="copy" />
-                        </button>
-                        <button className="icon-button danger" type="button" onClick={() => void deleteAlias(alias.address)} disabled={busy === alias.address} aria-label={`Delete ${alias.address}`}>
-                          <Icon name="trash" />
-                        </button>
+                        {pendingDelete === alias.address ? (
+                          <>
+                            <span className="delete-question">Delete this alias?</span>
+                            <button
+                              className="secondary-button compact-button"
+                              type="button"
+                              autoFocus
+                              onClick={() => setPendingDelete("")}
+                              disabled={busy === alias.address}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              className="danger-button compact-button"
+                              type="button"
+                              onClick={() => void deleteAlias(alias.address)}
+                              disabled={busy === alias.address}
+                              aria-busy={busy === alias.address}
+                            >
+                              {busy === alias.address ? "Deleting…" : "Delete"}
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              className="secondary-button compact-button"
+                              type="button"
+                              onClick={() => void copy(alias.address, "Alias copied.")}
+                            >
+                              <Icon name="copy" /> Copy
+                            </button>
+                            <button
+                              className="icon-button danger"
+                              type="button"
+                              onClick={() => {
+                                setPendingDelete(alias.address);
+                                setNotice(null);
+                              }}
+                              aria-label={`Delete ${alias.address}`}
+                              title="Delete alias"
+                            >
+                              <Icon name="trash" />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </li>
                   ))}
@@ -405,17 +481,14 @@ function App() {
               ) : (
                 <div className="empty-state">
                   <span className="empty-icon"><Icon name="mail" /></span>
-                  <h3>No managed aliases yet</h3>
-                  <p>Exchange confirmed that this mailbox currently has no Mail Alias Manager addresses.</p>
-                  <button className="primary-button" type="button" onClick={() => void generateAlias()} disabled={busy === "generate"}>
-                    <Icon name="plus" /> Generate first email
-                  </button>
+                  <h3>No aliases yet</h3>
+                  <p>Create an alias above. Mail to the alias arrives in {inboxAddress}.</p>
                 </div>
               )}
 
               <footer className="ledger-footer">
-                <span>FIFO policy</span>
-                <p>The app keeps at most 30 managed aliases on this mailbox. Creating the next one removes the oldest app-managed alias first, even if you changed domains.</p>
+                <strong>Alias limit</strong>
+                <p>You can keep up to 30 aliases. When you create alias 31, the app deletes the oldest alias that it created.</p>
               </footer>
             </section>
           </>

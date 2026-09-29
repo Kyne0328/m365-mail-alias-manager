@@ -11,9 +11,9 @@ export default defineConfig({
       manifest: {
         name: "Mail Alias Manager",
         short_name: "Alias Manager",
-        description: "Create and rotate Microsoft 365 mailbox aliases.",
-        theme_color: "#0b3b36",
-        background_color: "#f5f7f3",
+        description: "Create Microsoft 365 email aliases for your current inbox.",
+        theme_color: "#3730a3",
+        background_color: "#f7f8fc",
         display: "standalone",
         start_url: "/",
         icons: [
