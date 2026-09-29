@@ -14,9 +14,9 @@ services:
       - key: API_SCOPE
         value: access_as_user
       - key: ALLOWED_ORIGINS
-        sync: false
+        value: https://m365-mail-alias-manager.onrender.com
       - key: PUBLIC_APP_URL
-        sync: false
+        value: https://m365-mail-alias-manager.onrender.com
       - key: EXCHANGE_CERTIFICATE_BASE64
         sync: false
       - key: EXCHANGE_CERTIFICATE_PASSWORD
