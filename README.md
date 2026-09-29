@@ -136,16 +136,15 @@ The PWA runs on `http://localhost:5173` and the API defaults to `http://localhos
 
 ## Backend certificate secret
 
-Render receives the PFX as base64. On PowerShell:
+The repository includes a local helper that exports the most recent certificate named `CN=Mail Alias Manager Exchange App`, prompts you for a PFX password, and copies the PFX base64 value directly to your clipboard:
 
 ```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("./alias-manager.pfx")) |
-  Set-Clipboard
+pwsh ./scripts/export-render-certificate.ps1
 ```
 
-Set the output as `EXCHANGE_CERTIFICATE_BASE64`. If the PFX has a password, set `EXCHANGE_CERTIFICATE_PASSWORD` too.
+Paste the clipboard value directly into Render as `EXCHANGE_CERTIFICATE_BASE64`, and use the password you entered as `EXCHANGE_CERTIFICATE_PASSWORD`.
 
-Do not commit either value.
+The generated PFX is stored under `.local-secrets/`, which is git-ignored. Do not paste either secret into chat or commit the private key.
 
 ## Render deployment
 
