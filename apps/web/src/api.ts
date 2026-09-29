@@ -110,10 +110,10 @@ export const api = {
     request<AliasSet>(
       `/api/aliases?organization=${encodeURIComponent(organization)}`
     ),
-  createAlias: (organization: string, domain: string, prefix: string) =>
+  createAlias: (organization: string, domain: string) =>
     request<AliasSet>("/api/aliases", {
       method: "POST",
-      body: JSON.stringify({ organization, domain, prefix })
+      body: JSON.stringify({ organization, domain })
     }),
   deleteAlias: (organization: string, address: string) =>
     request<AliasSet>("/api/aliases", {

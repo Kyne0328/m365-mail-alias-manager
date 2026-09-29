@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useIsAuthenticated } from "@azure/msal-react";
 import {
   api,
@@ -12,8 +12,8 @@ import {
 import { getActiveAccount, signIn, signOut } from "./auth";
 
 const DOMAIN_KEY = "alias-manager.domain";
-const PREFIX_KEY = "alias-manager.prefix";
-const DEFAULT_PREFIX = "temp";
+
+
 
 type Notice = { tone: "success" | "error" | "info"; text: string } | null;
 
@@ -36,8 +36,8 @@ function App() {
   const account = getActiveAccount();
   const [session, setSession] = useState<Session | null>(null);
   const [organization, setOrganization] = useState("");
-  const [domain, setDomain] = useState(() => localStorage.getItem(DOMAIN_KEY) ?? "");
-  const [prefix, setPrefix] = useState(() => localStorage.getItem(PREFIX_KEY) ?? DEFAULT_PREFIX);
+  const [domain, setDomain] = useState("");
+
   const [domains, setDomains] = useState<DomainInfo[]>([]);
   const [aliasSet, setAliasSet] = useState<AliasSet | null>(null);
   const [onboarding, setOnboarding] = useState<OnboardingInfo | null>(null);
@@ -49,11 +49,6 @@ function App() {
     import.meta.env.VITE_ENTRA_CLIENT_ID &&
       import.meta.env.VITE_API_SCOPE &&
       import.meta.env.VITE_API_BASE_URL
-  );
-
-  const normalizedPrefix = useMemo(
-    () => prefix.trim().toLowerCase().replace(/\s+/g, "-"),
-    [prefix]
   );
 
   const handleError = useCallback((error: unknown) => {
@@ -74,10 +69,15 @@ function App() {
 
     setDomain((current) => {
       const remembered = localStorage.getItem(DOMAIN_KEY) ?? "";
-      const preferred = current || remembered;
-      const stillValid = snapshot.domains.some((item) => item.domain === preferred);
+      const currentIsValid = snapshot.domains.some((item) => item.domain === current);
+      const rememberedIsValid = snapshot.domains.some((item) => item.domain === remembered);
+      const preferredCustomDomain = snapshot.domains.find(
+        (item) => !item.domain.endsWith(".onmicrosoft.com")
+      )?.domain;
       const nextDomain =
-        (stillValid ? preferred : "") ||
+        (currentIsValid ? current : "") ||
+        (rememberedIsValid && !remembered.endsWith(".onmicrosoft.com") ? remembered : "") ||
+        preferredCustomDomain ||
         snapshot.domains.find((item) => item.isDefault)?.domain ||
         snapshot.domains[0]?.domain ||
         "";
@@ -126,15 +126,13 @@ function App() {
   }, [authenticated, handleError, loadWorkspace]);
 
   async function generateAlias() {
-    if (!organization || !domain || !normalizedPrefix) return;
+    if (!organization || !domain) return;
 
     setBusy("generate");
     setNotice(null);
     try {
-      const data = await api.createAlias(organization, domain, normalizedPrefix);
+      const data = await api.createAlias(organization, domain);
       setAliasSet(data);
-      localStorage.setItem(PREFIX_KEY, normalizedPrefix);
-      setPrefix(normalizedPrefix);
       setNotice({
         tone: "success",
         text: `${data.aliases[0]?.address ?? "The new alias"} is ready to receive mail.`
@@ -204,9 +202,9 @@ function App() {
             <strong>you@company.com</strong>
             <div className="route-line" />
             <div className="route-addresses">
-              <span>m365am-temp-000031-a1b2c3d4e5f6@company.com</span>
-              <span>m365am-temp-000030-14e98a20bc31@company.com</span>
-              <span>m365am-temp-000029-7c40f61b882a@company.com</span>
+              <span>jpeterson@company.com</span>
+              <span>mcarter@company.com</span>
+              <span>abrooks@company.com</span>
             </div>
             <div className="route-note">31st created → oldest removed</div>
           </div>
@@ -318,8 +316,8 @@ function App() {
             <section className="control-strip" aria-labelledby="alias-settings-heading">
               <div className="section-number">02</div>
               <div className="control-copy">
-                <h2 id="alias-settings-heading">Alias pattern</h2>
-                <p>Choose an accepted domain and a recognizable prefix. The domain list comes directly from Exchange.</p>
+                <h2 id="alias-settings-heading">Alias domain</h2>
+                <p>Choose where generated addresses should live. Custom domains are preferred automatically when available.</p>
               </div>
               <div className="control-fields">
                 <div className="field">
@@ -340,21 +338,9 @@ function App() {
                     ))}
                   </select>
                 </div>
-                <div className="field">
-                  <label htmlFor="prefix">Prefix</label>
-                  <input
-                    id="prefix"
-                    name="prefix"
-                    value={prefix}
-                    onChange={(event) => setPrefix(event.target.value)}
-                    maxLength={24}
-                    pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,23}"
-                    required
-                    autoCapitalize="none"
-                    spellCheck={false}
-                    aria-describedby="prefix-help"
-                  />
-                  <span className="field-help" id="prefix-help">Creates m365am-{normalizedPrefix || "temp"}-000001-xxxxxxxxxxxx@{domain || "…"}</span>
+                <div className="field alias-preview">
+                  <span className="field-label">Generated style</span>
+                  <span className="field-help">Examples: jpeterson@{domain || "…"}, mcarter@{domain || "…"}</span>
                 </div>
               </div>
             </section>
@@ -375,7 +361,7 @@ function App() {
                   >
                     <Icon name="refresh" />
                   </button>
-                  <button className="primary-button generate-button" type="button" onClick={() => void generateAlias()} disabled={busy === "generate" || !normalizedPrefix}>
+                  <button className="primary-button generate-button" type="button" onClick={() => void generateAlias()} disabled={busy === "generate" || !domain}>
                     <Icon name="plus" />
                     {busy === "generate" ? "Creating…" : "Generate email"}
                   </button>
@@ -429,7 +415,7 @@ function App() {
 
               <footer className="ledger-footer">
                 <span>FIFO policy</span>
-                <p>The app keeps at most 30 managed aliases on this mailbox. Creating the next one removes the oldest app-managed alias first, even if you changed prefix or domain.</p>
+                <p>The app keeps at most 30 managed aliases on this mailbox. Creating the next one removes the oldest app-managed alias first, even if you changed domains.</p>
               </footer>
             </section>
           </>
