@@ -1,21 +1,8 @@
-import { config } from "./config.js";
-
-export function buildAdminConsentUrl(tenantId: string): string {
-  const url = new URL(
-    `https://login.microsoftonline.com/${tenantId}/adminconsent`
-  );
-  url.searchParams.set("client_id", config.clientId);
-  url.searchParams.set("scope", "https://outlook.office365.com/.default");
-  url.searchParams.set("redirect_uri", config.publicAppUrl);
-  return url.toString();
-}
-
-export function buildSetupScript(): string {
-  return `# Mail Alias Manager — one-time tenant setup
+# Mail Alias Manager — one-time tenant setup
 # Run as an Exchange Organization Management administrator after granting admin consent.
 
 $ErrorActionPreference = "Stop"
-$AppId = "${config.clientId}"
+$AppId = "7e902ae9-78a6-417e-8e5d-19bc1ecf9d21"
 $DisplayName = "Mail Alias Manager"
 $RecipientRole = "Mail Alias Manager - Recipients"
 $DomainRole = "Mail Alias Manager - Domains"
@@ -79,17 +66,17 @@ $CustomRbacReady = $false
 try {
   if (-not (Get-ManagementRole $RecipientRole -ErrorAction SilentlyContinue)) {
     New-ManagementRole -Name $RecipientRole -Parent "Mail Recipients" -ErrorAction Stop | Out-Null
-    Get-ManagementRoleEntry "$RecipientRole\\*" -ErrorAction Stop |
+    Get-ManagementRoleEntry "$RecipientRole\*" -ErrorAction Stop |
       Where-Object Name -NotIn @("Get-Mailbox", "Set-Mailbox") |
       ForEach-Object { Remove-ManagementRoleEntry $_.Identity -Confirm:$false -ErrorAction Stop }
 
-    Set-ManagementRoleEntry "$RecipientRole\\Get-Mailbox" -Parameters Filter,ResultSize -ErrorAction Stop
-    Set-ManagementRoleEntry "$RecipientRole\\Set-Mailbox" -Parameters Identity,EmailAddresses -ErrorAction Stop
+    Set-ManagementRoleEntry "$RecipientRole\Get-Mailbox" -Parameters Filter,ResultSize -ErrorAction Stop
+    Set-ManagementRoleEntry "$RecipientRole\Set-Mailbox" -Parameters Identity,EmailAddresses -ErrorAction Stop
   }
 
   if (-not (Get-ManagementRole $DomainRole -ErrorAction SilentlyContinue)) {
     New-ManagementRole -Name $DomainRole -Parent "View-Only Configuration" -ErrorAction Stop | Out-Null
-    Get-ManagementRoleEntry "$DomainRole\\*" -ErrorAction Stop |
+    Get-ManagementRoleEntry "$DomainRole\*" -ErrorAction Stop |
       Where-Object Name -ne "Get-AcceptedDomain" |
       ForEach-Object { Remove-ManagementRoleEntry $_.Identity -Confirm:$false -ErrorAction Stop }
   }
@@ -107,7 +94,7 @@ try {
 
   $CustomRbacReady = $true
 } catch {
-  Write-Warning ("Least-privilege custom role creation is unavailable in this tenant: " + $_.Exception.Message)
+  Write-Warning "Least-privilege custom role creation is unavailable in this tenant: $($_.Exception.Message)"
   Write-Warning "Falling back to Microsoft's built-in Recipient Management and View-Only Organization Management role groups."
 }
 
@@ -138,5 +125,3 @@ if ($CustomRbacReady) {
   Write-Host "Mail Alias Manager tenant setup is complete (built-in Exchange role-group fallback)." -ForegroundColor Green
 }
 Write-Host "Exchange permission caches can take time to refresh after a new assignment."
-`;
-}
