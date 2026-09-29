@@ -7,3 +7,4 @@ dist/
 *.log
 coverage/
 .vite/
+.local-secrets/
