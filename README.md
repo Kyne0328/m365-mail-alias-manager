@@ -8,8 +8,8 @@ The app is customer-agnostic. It does **not** hard-code a customer tenant, domai
 
 - Signs users in with Microsoft Entra ID.
 - Binds the target mailbox to the signed-in user's immutable Microsoft Entra object ID; clients cannot submit an arbitrary mailbox.
-- Verifies the supplied primary `.onmicrosoft.com` organization domain resolves to the same Entra tenant as the token.
-- Reads accepted Exchange domains after tenant admin onboarding.
+- Discovers the signed-in tenant's primary `.onmicrosoft.com` organization automatically; users do not type or store it in the browser.
+- Reads accepted Exchange domains and the current mailbox alias set together after tenant admin onboarding.
 - Generates aliases in the reserved form `m365am-<prefix>-000001-<random>@domain`: the number auto-increments while the random suffix prevents practical address reuse after manual deletion.
 - Keeps at most 30 app-managed aliases per mailbox, across all selected prefixes and domains.
 - On alias 31, removes the oldest managed alias and adds the new one (FIFO).
@@ -70,23 +70,22 @@ api://<client-id>/access_as_user
 
 Set the app manifest's `api.requestedAccessTokenVersion` to `2`. The backend validates the v2 access token audience (the API client-ID GUID), tenant-specific issuer, tenant ID, immutable user object ID, the `access_as_user` scope, and the `azp` authorized-party claim so tokens acquired by other client applications are rejected.
 
-### Exchange application permission
+### Application permissions
 
-Add **Office 365 Exchange Online → Application permissions → Exchange.ManageAsApp**.
+Add these application permissions to the app registration:
 
-Every customer tenant must grant admin consent before the app can connect to that tenant.
+- **Office 365 Exchange Online → Exchange.ManageAsApp** — used for mailbox alias and accepted-domain operations.
+- **Microsoft Graph → Domain.Read.All** — used only to discover a tenant's initial `.onmicrosoft.com` domain when it cannot be derived from the signed-in username.
+
+Every customer tenant must grant admin consent before the app can connect to that tenant. The browser never receives either application permission or the Exchange certificate.
 
 Upload the public half of the server certificate under **Certificates & secrets → Certificates**. Keep the private PFX only in the backend secret store.
 
 ## Tenant onboarding
 
-A signed-in user enters the tenant's primary domain, such as:
+The signed-in tenant is discovered automatically. If the user's Microsoft 365 username already ends in `.onmicrosoft.com`, that domain is used directly. Otherwise the backend uses the tenant ID from the validated access token plus Microsoft Graph `Domain.Read.All` to discover the tenant's initial `.onmicrosoft.com` domain.
 
-```text
-contoso.onmicrosoft.com
-```
-
-The backend resolves Microsoft's OpenID configuration for that domain and verifies the resulting tenant GUID matches the user's signed-in tenant.
+The PWA then loads the accepted domains, mailbox, and existing Mail Alias Manager aliases in one bootstrap request. The selected alias domain is a dropdown populated from Exchange; organization identity is never taken from browser local storage.
 
 If Exchange access is not ready, the PWA shows:
 
@@ -176,7 +175,7 @@ Health check:
 GET /health
 ```
 
-The PWA calls `/health` as soon as it starts so a sleeping Render service can begin waking while the user signs in. The API does not depend on server-side session state.
+The PWA calls `/health` as soon as it starts so a sleeping Render service can begin waking while the user signs in. That health request also starts a reusable PowerShell worker so `ExchangeOnlineManagement` can load before the first authenticated request. While the service is awake, the worker reuses its Exchange connection instead of reconnecting for each domains/aliases call. The API still does not depend on browser session state; Exchange remains the source of truth.
 
 ## Cloudflare Pages deployment
 
@@ -221,7 +220,7 @@ Mutations are serialized per tenant/user inside each API process so concurrent r
 ## Important production notes
 
 - This app depends on the Exchange Online PowerShell management surface because Microsoft Graph does not expose supported mailbox proxy-address mutation. Microsoft's newer Exchange Admin REST API is currently preview and its Mailbox endpoint does not support changing `EmailAddresses`.
-- A Render free instance may sleep. The app remains stateless, so sleeping does not risk customer data.
+- A Render free instance may sleep. The app now warms the backend and PowerShell worker as early as possible, but a true Render free-tier cold start can still add noticeable latency. The app remains stateless with Exchange as the source of truth, so sleeping does not risk customer data.
 - The in-process mutation lock protects one API instance. If the service is later scaled to multiple instances, replace it with a distributed lock before enabling concurrent replicas.
 - The 30-alias cap is mailbox-wide for aliases in the reserved `m365am-` namespace. Unrelated SMTP aliases are never counted or deleted.
 - Customer organizations remain responsible for their Microsoft 365 licensing, policies, and acceptable-use requirements.

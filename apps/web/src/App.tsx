@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useIsAuthenticated } from "@azure/msal-react";
-import { api, ApiError, type AliasSet, type DomainInfo, type OnboardingInfo, type Session } from "./api";
+import {
+  api,
+  ApiError,
+  type AliasSet,
+  type DomainInfo,
+  type OnboardingInfo,
+  type Session,
+  type WorkspaceSnapshot
+} from "./api";
 import { getActiveAccount, signIn, signOut } from "./auth";
 
-const ORG_KEY = "alias-manager.organization";
 const DOMAIN_KEY = "alias-manager.domain";
 const PREFIX_KEY = "alias-manager.prefix";
 const DEFAULT_PREFIX = "temp";
@@ -28,7 +35,7 @@ function App() {
   const authenticated = useIsAuthenticated();
   const account = getActiveAccount();
   const [session, setSession] = useState<Session | null>(null);
-  const [organization, setOrganization] = useState(() => localStorage.getItem(ORG_KEY) ?? "");
+  const [organization, setOrganization] = useState("");
   const [domain, setDomain] = useState(() => localStorage.getItem(DOMAIN_KEY) ?? "");
   const [prefix, setPrefix] = useState(() => localStorage.getItem(PREFIX_KEY) ?? DEFAULT_PREFIX);
   const [domains, setDomains] = useState<DomainInfo[]>([]);
@@ -58,84 +65,68 @@ function App() {
     }
   }, []);
 
-  useEffect(() => {
-    if (!authenticated) {
-      setSession(null);
-      return;
-    }
+  const applyWorkspace = useCallback((snapshot: WorkspaceSnapshot) => {
+    setOrganization(snapshot.organization);
+    setDomains(snapshot.domains);
+    setAliasSet(snapshot.aliasSet);
+    setOnboarding(null);
+    setOrganizationReady(true);
 
-    api.session().then(setSession).catch(handleError);
-  }, [authenticated, handleError]);
+    setDomain((current) => {
+      const remembered = localStorage.getItem(DOMAIN_KEY) ?? "";
+      const preferred = current || remembered;
+      const stillValid = snapshot.domains.some((item) => item.domain === preferred);
+      const nextDomain =
+        (stillValid ? preferred : "") ||
+        snapshot.domains.find((item) => item.isDefault)?.domain ||
+        snapshot.domains[0]?.domain ||
+        "";
 
-  const loadDomains = useCallback(async (org = organization) => {
-    const clean = org.trim().toLowerCase();
-    if (!clean) return;
+      if (nextDomain) localStorage.setItem(DOMAIN_KEY, nextDomain);
+      return nextDomain;
+    });
+  }, []);
 
-    setBusy("organization");
-    setNotice(null);
+  const loadWorkspace = useCallback(async (mode: "bootstrap" | "refresh" = "bootstrap") => {
+    setBusy(mode);
+    if (mode === "bootstrap") setNotice(null);
 
     try {
-      const [domainResult, onboardingResult] = await Promise.all([
-        api.domains(clean),
-        api.onboarding(clean)
-      ]);
-
-      setDomains(domainResult.domains);
-      setOnboarding(onboardingResult);
-      setOrganizationReady(true);
-      localStorage.setItem(ORG_KEY, clean);
-      setOrganization(clean);
-
-      const stillValid = domainResult.domains.some((item) => item.domain === domain);
-      const nextDomain =
-        stillValid
-          ? domain
-          : domainResult.domains.find((item) => item.isDefault)?.domain ??
-            domainResult.domains[0]?.domain ??
-            "";
-
-      setDomain(nextDomain);
-      if (nextDomain) localStorage.setItem(DOMAIN_KEY, nextDomain);
+      const snapshot = await api.bootstrap();
+      applyWorkspace(snapshot);
     } catch (error) {
-      try {
-        setOnboarding(await api.onboarding(clean));
-      } catch {
-        setOnboarding(null);
+      setAliasSet(null);
+      if (error instanceof ApiError && error.code === "EXCHANGE_NOT_READY") {
+        try {
+          setOnboarding(await api.onboarding());
+        } catch {
+          setOnboarding(null);
+        }
       }
       handleError(error);
     } finally {
       setBusy("");
     }
-  }, [domain, handleError, organization]);
+  }, [applyWorkspace, handleError]);
 
   useEffect(() => {
-    if (authenticated && organization) {
-      void loadDomains(organization);
-    }
-  }, [authenticated]);
-
-  const loadAliases = useCallback(async () => {
-    if (!organizationReady) return;
-
-    setBusy("aliases");
-    try {
-      const data = await api.aliases(organization);
-      setAliasSet(data);
-    } catch (error) {
-      handleError(error);
-    } finally {
+    if (!authenticated) {
+      setSession(null);
+      setOrganization("");
+      setDomains([]);
+      setAliasSet(null);
+      setOnboarding(null);
+      setOrganizationReady(false);
       setBusy("");
+      return;
     }
-  }, [handleError, organization, organizationReady]);
 
-  useEffect(() => {
-    if (organizationReady) {
-      void loadAliases();
-    }
-  }, [organizationReady]);
+    void api.session().then(setSession).catch(handleError);
+    void loadWorkspace("bootstrap");
+  }, [authenticated, handleError, loadWorkspace]);
 
   async function generateAlias() {
-    if (!domain || !normalizedPrefix) return;
+    if (!organization || !domain || !normalizedPrefix) return;
 
     setBusy("generate");
     setNotice(null);
@@ -156,6 +147,8 @@ function App() {
   }
 
   async function deleteAlias(address: string) {
+    if (!organization) return;
+
     setBusy(address);
     setNotice(null);
     try {
@@ -194,7 +187,7 @@ function App() {
           <p className="eyebrow">Microsoft 365 alias rotation</p>
           <h1 id="welcome-title">Fresh inbox aliases, without fresh mailboxes.</h1>
           <p className="hero-copy">
-            Sign in with a work or school account. Your organization chooses whether to authorize the app; the service never hard-codes or assumes your tenant, domain, or mailbox.
+            Sign in with a work or school account. Your organization is detected automatically, and your aliases are reloaded from Exchange on every device.
           </p>
           <button className="primary-button sign-in-button" type="button" onClick={() => void signIn()}>
             Continue with Microsoft
@@ -264,37 +257,36 @@ function App() {
         <section className="configuration-panel" aria-labelledby="organization-heading">
           <div className="section-number">01</div>
           <div className="configuration-copy">
-            <h2 id="organization-heading">Connect your organization</h2>
-            <p>Enter the tenant’s primary <code>.onmicrosoft.com</code> domain. The API verifies it belongs to the tenant in your sign-in token.</p>
+            <h2 id="organization-heading">Your organization</h2>
+            <p>The tenant is discovered from your Microsoft sign-in. There is nothing to type or remember on another device.</p>
           </div>
-          <form
-            className="organization-form"
-            onSubmit={(event) => {
-              event.preventDefault();
-              void loadDomains();
-            }}
-          >
-            <label htmlFor="organization">Organization domain</label>
-            <div className="input-action">
-              <input
-                id="organization"
-                name="organization"
-                value={organization}
-                onChange={(event) => setOrganization(event.target.value)}
-                placeholder="contoso.onmicrosoft.com"
-                inputMode="url"
-                autoCapitalize="none"
-                spellCheck={false}
-                required
-                pattern="[A-Za-z0-9.-]+\.onmicrosoft\.com"
-                aria-describedby="organization-help"
-              />
-              <button className="secondary-button" type="submit" disabled={busy === "organization"}>
-                {busy === "organization" ? "Checking…" : "Connect"}
-              </button>
-            </div>
-            <span className="field-help" id="organization-help">Example: contoso.onmicrosoft.com</span>
-          </form>
+          <div className={`organization-status${busy === "bootstrap" ? " is-loading" : ""}`} aria-live="polite">
+            {busy === "bootstrap" && !organizationReady ? (
+              <>
+                <span className="loading-dot" aria-hidden="true" />
+                <div>
+                  <strong>Connecting to Microsoft 365…</strong>
+                  <span>Loading your tenant, domains, mailbox, and aliases in one pass.</span>
+                </div>
+              </>
+            ) : organizationReady ? (
+              <>
+                <span className="status-check" aria-hidden="true">✓</span>
+                <div>
+                  <strong>{organization}</strong>
+                  <span>{domains.length} accepted {domains.length === 1 ? "domain" : "domains"} available</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <span className="status-warning" aria-hidden="true">!</span>
+                <div>
+                  <strong>Organization setup required</strong>
+                  <span>An administrator needs to finish the one-time authorization below.</span>
+                </div>
+              </>
+            )}
+          </div>
         </section>
 
         {!organizationReady && onboarding ? (
@@ -303,7 +295,7 @@ function App() {
               <p className="eyebrow">Tenant administrator</p>
               <h2 id="admin-heading">One-time authorization is required</h2>
               <p>
-                An Exchange administrator must grant the application permission and run the least-privilege setup script once for this tenant.
+                An administrator must grant the application its domain-read and Exchange permissions, then run the Exchange setup script once for this tenant.
               </p>
             </div>
             <div className="onboarding-actions">
@@ -327,12 +319,20 @@ function App() {
               <div className="section-number">02</div>
               <div className="control-copy">
                 <h2 id="alias-settings-heading">Alias pattern</h2>
-                <p>Choose an accepted domain and a recognizable prefix. The counter is calculated from Exchange every time.</p>
+                <p>Choose an accepted domain and a recognizable prefix. The domain list comes directly from Exchange.</p>
               </div>
               <div className="control-fields">
                 <div className="field">
                   <label htmlFor="domain">Domain</label>
-                  <select id="domain" name="domain" value={domain} onChange={(event) => setDomain(event.target.value)}>
+                  <select
+                    id="domain"
+                    name="domain"
+                    value={domain}
+                    onChange={(event) => {
+                      setDomain(event.target.value);
+                      localStorage.setItem(DOMAIN_KEY, event.target.value);
+                    }}
+                  >
                     {domains.map((item) => (
                       <option value={item.domain} key={item.domain}>
                         {item.domain}{item.isDefault ? " — default" : ""}
@@ -359,14 +359,20 @@ function App() {
               </div>
             </section>
 
-            <section className="aliases-section" aria-labelledby="aliases-heading">
+            <section className="aliases-section" aria-labelledby="aliases-heading" aria-busy={busy === "bootstrap" || busy === "refresh"}>
               <div className="aliases-toolbar">
                 <div>
                   <p className="eyebrow">03 · Active aliases</p>
                   <h2 id="aliases-heading">Routing ledger</h2>
                 </div>
                 <div className="toolbar-actions">
-                  <button className="icon-button" type="button" onClick={() => void loadAliases()} aria-label="Refresh aliases" disabled={busy === "aliases"}>
+                  <button
+                    className="icon-button"
+                    type="button"
+                    onClick={() => void loadWorkspace("refresh")}
+                    aria-label="Refresh aliases"
+                    disabled={busy === "refresh"}
+                  >
                     <Icon name="refresh" />
                   </button>
                   <button className="primary-button generate-button" type="button" onClick={() => void generateAlias()} disabled={busy === "generate" || !normalizedPrefix}>
@@ -376,7 +382,15 @@ function App() {
                 </div>
               </div>
 
-              {aliasSet?.aliases.length ? (
+              {!aliasSet ? (
+                <div className="loading-state" role="status">
+                  <span className="loading-dot" aria-hidden="true" />
+                  <div>
+                    <h3>Loading aliases…</h3>
+                    <p>Reading the current mailbox state from Exchange.</p>
+                  </div>
+                </div>
+              ) : aliasSet.aliases.length ? (
                 <ol className="alias-list">
                   {aliasSet.aliases.map((alias, index) => (
                     <li key={alias.address} className="alias-row">
@@ -406,8 +420,8 @@ function App() {
                 <div className="empty-state">
                   <span className="empty-icon"><Icon name="mail" /></span>
                   <h3>No managed aliases yet</h3>
-                  <p>Generate your first address. It will route into {aliasSet?.mailbox ?? session?.username ?? "your mailbox"}.</p>
-                  <button className="primary-button" type="button" onClick={() => void generateAlias()}>
+                  <p>Exchange confirmed that this mailbox currently has no Mail Alias Manager addresses.</p>
+                  <button className="primary-button" type="button" onClick={() => void generateAlias()} disabled={busy === "generate"}>
                     <Icon name="plus" /> Generate first email
                   </button>
                 </div>

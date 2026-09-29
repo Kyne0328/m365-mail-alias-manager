@@ -87,6 +87,12 @@ export type AliasSet = {
   nextSequence: number;
 };
 
+export type WorkspaceSnapshot = {
+  organization: string;
+  domains: DomainInfo[];
+  aliasSet: AliasSet;
+};
+
 export type OnboardingInfo = {
   adminConsentUrl: string;
   setupScript: string;
@@ -94,10 +100,8 @@ export type OnboardingInfo = {
 
 export const api = {
   session: () => request<Session>("/api/session"),
-  onboarding: (organization: string) =>
-    request<OnboardingInfo>(
-      `/api/onboarding?organization=${encodeURIComponent(organization)}`
-    ),
+  bootstrap: () => request<WorkspaceSnapshot>("/api/bootstrap"),
+  onboarding: () => request<OnboardingInfo>("/api/onboarding"),
   domains: (organization: string) =>
     request<{ domains: DomainInfo[] }>(
       `/api/domains?organization=${encodeURIComponent(organization)}`

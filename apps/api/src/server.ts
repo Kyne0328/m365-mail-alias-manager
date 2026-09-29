@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import { config } from "./config.js";
+import { warmExchangeRuntime } from "./exchange.js";
 import { registerRoutes } from "./routes.js";
 
 const app = Fastify({
@@ -35,10 +36,16 @@ await app.register(rateLimit, {
   timeWindow: "1 minute"
 });
 
-app.get("/health", async () => ({
-  ok: true,
-  service: "m365-mail-alias-manager-api"
-}));
+app.get("/health", async () => {
+  // Start PowerShell and import ExchangeOnlineManagement while the user is
+  // signing in, so the first authenticated request does less cold work.
+  warmExchangeRuntime();
+
+  return {
+    ok: true,
+    service: "m365-mail-alias-manager-api"
+  };
+});
 
 await registerRoutes(app);
 

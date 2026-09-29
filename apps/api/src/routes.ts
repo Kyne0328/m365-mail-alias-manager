@@ -1,7 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { authenticate, requireAuth } from "./auth.js";
 import { config } from "./config.js";
-import { type AliasSet, type ExchangeDomain, ExchangeError, runExchange } from "./exchange.js";
+import {
+  type AliasSet,
+  type ExchangeDomain,
+  type WorkspaceSnapshot,
+  ExchangeError,
+  runExchange
+} from "./exchange.js";
 import { buildAdminConsentUrl, buildSetupScript } from "./onboarding.js";
 import { normalizeOrganization, verifyOrganization } from "./tenant.js";
 import { normalizeAddress, normalizeDomain, normalizePrefix } from "./validation.js";
@@ -26,7 +32,7 @@ function sendExchangeError(reply: FastifyReply, error: unknown) {
     return reply.code(403).send({
       code: "EXCHANGE_NOT_READY",
       message:
-        "This Microsoft 365 tenant has not finished the Mail Alias Manager Exchange setup, or the permission assignment is still propagating."
+        "This Microsoft 365 tenant has not finished the Mail Alias Manager setup, or a required permission assignment is still propagating."
     });
   }
 
@@ -71,20 +77,32 @@ export async function registerRoutes(app: FastifyInstance) {
     };
   });
 
-  app.get("/api/onboarding", { preHandler: authenticate }, async (request, reply) => {
+  app.get("/api/bootstrap", { preHandler: authenticate }, async (request, reply) => {
     try {
-      const query = request.query as { organization?: string };
-      await verifiedOrganization(request, query.organization);
       const auth = requireAuth(request);
-      return {
-        adminConsentUrl: buildAdminConsentUrl(auth.tenantId),
-        setupScript: buildSetupScript()
-      };
+      return await runExchange<WorkspaceSnapshot>({
+        action: "bootstrap",
+        tenantId: auth.tenantId,
+        userId: auth.userId,
+        username: auth.username,
+        limit: config.aliasLimit
+      });
     } catch (error) {
+      if (error instanceof ExchangeError) return sendExchangeError(reply, error);
       return sendInputError(reply, error);
     }
   });
 
+  app.get("/api/onboarding", { preHandler: authenticate }, async (request) => {
+    const auth = requireAuth(request);
+    return {
+      adminConsentUrl: buildAdminConsentUrl(auth.tenantId),
+      setupScript: buildSetupScript()
+    };
+  });
+
+  // Backward-compatible read endpoints. The PWA now uses /api/bootstrap so
+  // accepted domains and aliases are fetched in one Exchange connection.
   app.get("/api/domains", { preHandler: authenticate }, async (request, reply) => {
     try {
       const query = request.query as { organization?: string };
